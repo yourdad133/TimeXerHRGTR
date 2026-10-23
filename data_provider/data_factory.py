@@ -16,7 +16,7 @@ def data_provider(args, flag):
     Data = data_dict[args.data]
     timeenc = 0 if args.embed != 'timeF' else 1
 
-    if flag in ('val', 'test'):
+    if flag == 'test':
         shuffle_flag = False
         drop_last = False
         batch_size = args.batch_size
@@ -34,7 +34,11 @@ def data_provider(args, flag):
         freq = args.freq
 
     if getattr(args, 'model', None) == 'TimeXerGTR':
-        cycle = getattr(args, 'gtr_cycle_len', args.cycle)
+        cycle = (
+            args.gtr_long_cycle_len
+            if getattr(args, 'gtr_hierarchical', False)
+            else getattr(args, 'gtr_cycle_len', args.cycle)
+        )
     else:
         cycle = args.cycle
     data_set = Data(
@@ -66,3 +70,6 @@ def data_provider(args, flag):
         num_workers=args.num_workers,
         drop_last=drop_last)
     return data_set, data_loader
+
+
+

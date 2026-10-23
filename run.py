@@ -4,7 +4,6 @@ import torch
 from exp.exp_main import Exp_Main
 import random
 import numpy as np
-from utils.adafe_reporting import adafe_setting_suffix
 
 parser = argparse.ArgumentParser(description='Model family for Time Series Forecasting')
 
@@ -43,26 +42,14 @@ parser.add_argument('--gtr_cycle_len', type=int, default=24,
                     help='global retrieval cycle length for TimeXerGTR')
 parser.add_argument('--gtr_gate_init', type=float, default=0.1,
                     help='initial residual gate for TimeXerGTR')
-# AdaFE V1: patch-only feature filtering; disabled preserves legacy checkpoints.
-parser.add_argument('--use_adafe', type=int, choices=[0, 1], default=0,
-                    help='enable AdaFE on TimeXerGTR endogenous patch tokens')
-parser.add_argument('--adafe_mode', choices=['hard', 'ste'], default='hard',
-                    help='hard: original FeTS mask; ste: experimental surrogate gradient')
-parser.add_argument('--adafe_fourier_degree', type=int, default=2)
-parser.add_argument('--adafe_poly_degree', type=int, default=2)
-parser.add_argument('--adafe_kernel', type=int, default=5)
-parser.add_argument('--adafe_tau', type=float, default=1.0)
-parser.add_argument('--adafe_gamma_init', type=float, default=0.05)
-parser.add_argument('--adafe_constant_reparam', type=int, choices=[0, 1], default=1,
-                    help='fold redundant zero-order bases into the scorer bias')
-parser.add_argument('--adafe_proxy_normalize', type=int, choices=[0, 1], default=1,
-                    help='normalize only the STE proxy by detached score std')
-parser.add_argument('--adafe_scorer_lr_scale', type=float, default=0.1,
-                    help='scorer-only LR multiplier; Electricity trial suggests 0.1')
-parser.add_argument('--adafe_report_dir', type=str, default='',
-                    help='optional isolated B0/A1/A2 run directory for diagnostics')
-parser.add_argument('--adafe_log_interval', type=int, default=100,
-                    help='collect AdaFE/GTR gradients every N steps when reporting')
+parser.add_argument('--gtr_hierarchical', type=int, choices=[0, 1], default=0,
+                    help='enable two-level residual cycle memory for TimeXerGTR')
+parser.add_argument('--gtr_short_cycle_len', type=int, default=None,
+                    help='short base cycle length in hierarchical mode')
+parser.add_argument('--gtr_long_cycle_len', type=int, default=None,
+                    help='long residual cycle length in hierarchical mode')
+parser.add_argument('--gtr_residual_scale', type=float, default=1.0,
+                    help='fixed scale for centered long-cycle residual')
 
 # PatchTST
 parser.add_argument('--fc_dropout', type=float, default=0.05, help='fully connected dropout')
@@ -112,8 +99,6 @@ parser.add_argument('--train_epochs', type=int, default=30, help='train epochs')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size of train input data')
 parser.add_argument('--patience', type=int, default=5, help='early stopping patience')
 parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
-parser.add_argument('--max_grad_norm', type=float, default=0.0,
-                    help='clip unscaled gradients before optimizer updates; 0 disables clipping')
 parser.add_argument('--des', type=str, default='test', help='exp description')
 parser.add_argument('--loss', type=str, default='mse', help='loss function')
 parser.add_argument('--lradj', type=str, default='type3', help='adjust learning rate')
@@ -129,27 +114,17 @@ parser.add_argument('--test_flop', action='store_true', default=False, help='See
 
 args = parser.parse_args()
 
-if not np.isfinite(args.max_grad_norm) or args.max_grad_norm < 0:
-    parser.error('--max_grad_norm must be finite and nonnegative')
-if args.use_adafe:
+if args.gtr_hierarchical:
     if args.model != 'TimeXerGTR':
-        parser.error('--use_adafe requires --model TimeXerGTR')
-    if args.use_multi_gpu:
-        parser.error('AdaFE V1 uses one batch-global threshold; DataParallel '
-                     'would change it into per-device thresholds. Use separate '
-                     'single-GPU runs for the matched experiments.')
-    if args.adafe_fourier_degree < 1 or args.adafe_poly_degree < 0:
-        parser.error('AdaFE requires Fourier degree >= 1 and polynomial degree >= 0')
-    if args.adafe_kernel <= 0 or args.adafe_kernel % 2 == 0:
-        parser.error('--adafe_kernel must be positive and odd')
-    if not np.isfinite(args.adafe_tau) or args.adafe_tau <= 0:
-        parser.error('--adafe_tau must be finite and positive')
-    if not np.isfinite(args.adafe_gamma_init):
-        parser.error('--adafe_gamma_init must be finite')
-    if not np.isfinite(args.adafe_scorer_lr_scale) or args.adafe_scorer_lr_scale <= 0:
-        parser.error('--adafe_scorer_lr_scale must be finite and positive')
-if args.adafe_report_dir and args.adafe_log_interval < 1:
-    parser.error('--adafe_log_interval must be positive')
+        parser.error('--gtr_hierarchical requires --model TimeXerGTR')
+    short_cycle = args.gtr_short_cycle_len
+    long_cycle = args.gtr_long_cycle_len
+    if short_cycle is None or long_cycle is None:
+        parser.error('hierarchical mode requires both cycle lengths')
+    if short_cycle <= 0 or long_cycle <= 0:
+        parser.error('hierarchical cycle lengths must be positive')
+    if long_cycle <= short_cycle or long_cycle % short_cycle != 0:
+        parser.error('long cycle must be a larger integer multiple of short cycle')
 
 # random seed
 fix_seed = args.random_seed
@@ -176,7 +151,12 @@ def experiment_setting(config, seed):
     setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}_seed{}'.format(
         config.model_id, config.model, config.data, config.features,
         config.seq_len, config.pred_len, config.cycle, seed)
-    return setting + adafe_setting_suffix(config)
+    if config.model == 'TimeXerGTR' and config.gtr_hierarchical:
+        setting += '_hr_s{}_l{}_beta{:g}'.format(
+            config.gtr_short_cycle_len,
+            config.gtr_long_cycle_len,
+            config.gtr_residual_scale)
+    return setting
 
 
 if args.is_training:
@@ -205,3 +185,6 @@ else:
     print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
     exp.test(setting, test=1)
     torch.cuda.empty_cache()
+
+
+
