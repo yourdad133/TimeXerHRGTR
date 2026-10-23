@@ -30,12 +30,16 @@ def adjust_learning_rate(optimizer, scheduler, epoch, args, printout=True):
     elif args.lradj == '6':
         lr_adjust = {epoch: args.learning_rate if epoch < 5 else args.learning_rate*0.1}  
     elif args.lradj == 'TST':
-        lr_adjust = {epoch: scheduler.get_last_lr()[0]}
+        # OneCycleLR already carries the scorer multiplier in each group.
+        for param_group, lr in zip(optimizer.param_groups, scheduler.get_last_lr()):
+            param_group['lr'] = lr
+        if printout: print('Updating learning rate to {}'.format(scheduler.get_last_lr()))
+        return
     
     if epoch in lr_adjust.keys():
         lr = lr_adjust[epoch]
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = lr * param_group.get('lr_scale', 1.0)
         if printout: print('Updating learning rate to {}'.format(lr))
 
 

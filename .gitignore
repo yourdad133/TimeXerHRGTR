@@ -1,0 +1,38 @@
+# ============ 大体积实验产物（不纳入版本控制）============
+# 训练权重（约 1.1G）
+checkpoints/
+# 逐 setting 的 metrics / pred / true 与训练历史
+results/
+# 可视化 PDF
+test_results/
+# 原始数据集（约 228M：*.npz / *.csv）
+dataset/
+# README 展示用的海报图（约 9.5M）；如需入库执行 git add -f assets/*.png
+assets/*.png
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# ============ 权重 / 数组 / 数据文件 ============
+*.pth
+*.pt
+*.npy
+*.npz
+*.csv
+
+# ============ 编辑器 / 系统 ============
+.vscode/
+.idea/
+.DS_Store
+
+# Excluded from GitHub uploads
+reports/
+experiment_logs/
+tests/
+datasets/
+weights/
+*.ckpt
+*.safetensors

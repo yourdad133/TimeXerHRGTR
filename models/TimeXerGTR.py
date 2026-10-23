@@ -5,6 +5,7 @@ from torch import nn
 
 from models import TimeXer
 from models.GTR import GTR as GlobalTemporalRetriever
+from layers.adafe_v1 import AdaFEAdapter
 
 
 class Model(TimeXer.Model):
@@ -23,38 +24,11 @@ class Model(TimeXer.Model):
         super().__init__(configs)
 
         self.input_channels = int(configs.enc_in)
-        self.gtr_hierarchical = bool(getattr(configs, "gtr_hierarchical", False))
         self.gtr_cycle_len = int(
             getattr(configs, "gtr_cycle_len", getattr(configs, "cycle", 24))
         )
-        if not self.gtr_hierarchical and self.gtr_cycle_len <= 0:
+        if self.gtr_cycle_len <= 0:
             raise ValueError("gtr_cycle_len must be positive.")
-
-        if self.gtr_hierarchical:
-            short_cycle_len = getattr(configs, "gtr_short_cycle_len", None)
-            long_cycle_len = getattr(configs, "gtr_long_cycle_len", None)
-            if short_cycle_len is None or long_cycle_len is None:
-                raise ValueError(
-                    "Hierarchical GTR requires short and long cycle lengths."
-                )
-            self.gtr_short_cycle_len = int(short_cycle_len)
-            self.gtr_long_cycle_len = int(long_cycle_len)
-            if self.gtr_short_cycle_len <= 0 or self.gtr_long_cycle_len <= 0:
-                raise ValueError("Hierarchical cycle lengths must be positive.")
-            if (
-                self.gtr_long_cycle_len <= self.gtr_short_cycle_len
-                or self.gtr_long_cycle_len % self.gtr_short_cycle_len != 0
-            ):
-                raise ValueError(
-                    "gtr_long_cycle_len must be a larger integer multiple of "
-                    "gtr_short_cycle_len."
-                )
-            self.gtr_num_blocks = (
-                self.gtr_long_cycle_len // self.gtr_short_cycle_len
-            )
-            self.gtr_residual_scale = float(
-                getattr(configs, "gtr_residual_scale", 1.0)
-            )
 
         period_len = int(getattr(configs, "gtr_period_len", 24))
         if period_len <= 0:
@@ -62,21 +36,9 @@ class Model(TimeXer.Model):
 
         self.gtr_channels = 1 if self.features == "MS" else self.input_channels
         gate_init = float(getattr(configs, "gtr_gate_init", 0.1))
-        if self.gtr_hierarchical:
-            self.Q_short = nn.Parameter(
-                torch.randn(self.gtr_short_cycle_len, self.gtr_channels) * 0.02
-            )
-            self.R_long_raw = nn.Parameter(
-                torch.zeros(
-                    self.gtr_num_blocks,
-                    self.gtr_short_cycle_len,
-                    self.gtr_channels,
-                )
-            )
-        else:
-            self.Q = nn.Parameter(
-                torch.randn(self.gtr_cycle_len, self.gtr_channels) * 0.02
-            )
+        self.Q = nn.Parameter(
+            torch.randn(self.gtr_cycle_len, self.gtr_channels) * 0.02
+        )
         self.gamma = nn.Parameter(torch.tensor(gate_init, dtype=torch.float32))
         self.GTR = GlobalTemporalRetriever(
             d_series=self.seq_len,
@@ -85,13 +47,27 @@ class Model(TimeXer.Model):
             period_len=period_len,
         )
 
-    def get_centered_residual(self):
-        """Keep the long-cycle memory zero mean across short-cycle blocks."""
-        if not self.gtr_hierarchical:
-            raise RuntimeError(
-                "Centered residual is only available in hierarchical mode."
-            )
-        return self.R_long_raw - self.R_long_raw.mean(dim=0, keepdim=True)
+        self.use_adafe = bool(getattr(configs, "use_adafe", False))
+        if self.use_adafe:
+            # Preserve backbone initialization and subsequent data/dropout RNG.
+            with torch.random.fork_rng(devices=[]):
+                self.adafe_adapter = AdaFEAdapter(
+                    d_model=configs.d_model,
+                    degree=getattr(configs, "adafe_fourier_degree", 2),
+                    p_degree=getattr(configs, "adafe_poly_degree", 2),
+                    mode=getattr(configs, "adafe_mode", "hard"),
+                    gamma_init=getattr(configs, "adafe_gamma_init", 0.05),
+                    kernel_size=getattr(configs, "adafe_kernel", 5),
+                    tau=getattr(configs, "adafe_tau", 1.0),
+                    constant_reparam=getattr(configs, "adafe_constant_reparam", True),
+                    proxy_normalize=getattr(configs, "adafe_proxy_normalize", True),
+                )
+
+    def apply_adafe_to_en_embed(self, en_embed):
+        """Apply the shared M/MS patch adapter immediately before the encoder."""
+        if self.use_adafe:
+            return self.adafe_adapter(en_embed)
+        return en_embed
 
     def _retrieve(self, endogenous, cycle_index):
         """Add the aligned global period segment to the local window."""
@@ -107,22 +83,8 @@ class Model(TimeXer.Model):
             raise ValueError("cycle_index must contain one value per batch item.")
         cycle_index = cycle_index.reshape(batch_size, 1).long()
         offsets = torch.arange(self.seq_len, device=endogenous.device).view(1, -1)
-        if self.gtr_hierarchical:
-            # cycle_index marks the first forecast step, not the first input step.
-            positions = (
-                cycle_index - self.seq_len + offsets
-            ) % self.gtr_long_cycle_len
-            short_positions = positions % self.gtr_short_cycle_len
-            block_positions = positions // self.gtr_short_cycle_len
-            centered_residual = self.get_centered_residual()
-            query = (
-                self.Q_short[short_positions]
-                + self.gtr_residual_scale
-                * centered_residual[block_positions, short_positions]
-            )
-        else:
-            positions = (cycle_index - self.seq_len + offsets) % self.gtr_cycle_len
-            query = self.Q[positions]
+        positions = (cycle_index - self.seq_len + offsets) % self.gtr_cycle_len
+        query = self.Q[positions]
         query = query.transpose(1, 2)
 
         global_information = self.GTR(endogenous.transpose(1, 2), query)
@@ -166,6 +128,7 @@ class Model(TimeXer.Model):
 
         enhanced = self._retrieve(endogenous, cycle_index)
         en_embed, n_vars = self.en_embedding(enhanced.transpose(1, 2))
+        en_embed = self.apply_adafe_to_en_embed(en_embed)
         ex_embed = self.ex_embedding(exogenous, x_mark_enc)
         enc_out = self.encoder(en_embed, ex_embed)
         enc_out = enc_out.reshape(

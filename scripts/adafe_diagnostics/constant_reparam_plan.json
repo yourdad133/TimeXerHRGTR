@@ -1,0 +1,92 @@
+{
+  "purpose": "Follow-up after verified 1024-fold redundant constant-basis update amplification.",
+  "prespecified_before_followup_training": true,
+  "test_used_for_selection": false,
+  "existing_main_plan_unchanged": true,
+  "jobs": [
+    {
+      "dataset": "ETTh2",
+      "seed": 2026,
+      "variant": "constant_reparam",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 0,
+      "validation_windows": 0,
+      "test_windows": 0,
+      "max_seconds": 1800
+    },
+    {
+      "dataset": "ETTh2",
+      "seed": 2027,
+      "variant": "constant_reparam",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 0,
+      "validation_windows": 0,
+      "test_windows": 0,
+      "max_seconds": 1800
+    },
+    {
+      "dataset": "ETTh2",
+      "seed": 2028,
+      "variant": "baseline",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 0,
+      "validation_windows": 0,
+      "test_windows": 0,
+      "max_seconds": 1800
+    },
+    {
+      "dataset": "ETTh2",
+      "seed": 2028,
+      "variant": "ste",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 0,
+      "validation_windows": 0,
+      "test_windows": 0,
+      "max_seconds": 1800
+    },
+    {
+      "dataset": "ETTh2",
+      "seed": 2028,
+      "variant": "constant_reparam",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 0,
+      "validation_windows": 0,
+      "test_windows": 0,
+      "max_seconds": 1800
+    },
+    {
+      "dataset": "Weather",
+      "seed": 2026,
+      "variant": "constant_reparam",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 4096,
+      "validation_windows": 512,
+      "test_windows": 1024,
+      "max_seconds": 1800
+    },
+    {
+      "dataset": "ETTm2",
+      "seed": 2026,
+      "variant": "constant_reparam",
+      "batch_size": 32,
+      "epochs": 30,
+      "patience": 10,
+      "train_windows": 4096,
+      "validation_windows": 512,
+      "test_windows": 1024,
+      "max_seconds": 1800
+    }
+  ]
+}
